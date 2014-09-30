@@ -18,9 +18,13 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+
+/* This is a Windows-specific USB backend using Cypress's CyAPI, which utilizes the
+ * CyUSB3.sys driver (with a CyUSB3.inf modified to include the bladeRF VID/PID).
+ */
+
 extern "C"
 {
-
 #include <stdlib.h>
 #include <pthread.h>
 #include <errno.h>
@@ -33,21 +37,25 @@ extern "C"
 }
 #include <CyAPI.h>
 
-GUID guid = {0x35D5D3F1, 0x9D0E, 0x4F62, 0xBC, 0xFB, 0xB0, 0xD4, 0x8E,0xA6, 0x34, 0x16};
+/* This GUID must match that in the modified CyUSB3.inf used with the bladeRF */
+static const GUID driver_guid = {
+    0x35D5D3F1, 0x9D0E, 0x4F62, 0xBC, 0xFB, 0xB0, 0xD4, 0x8E,0xA6, 0x34, 0x16
+};
 
-struct bladerf_Cypress_Data {
-    CCyUSBDevice *CyDevice;
+/* "Private data" for the CyAPI backend */
+struct bladerf_cyapi {
+    CCyUSBDevice *dev;
     CRITICAL_SECTION DeviceLock; 
 };
 
-#define MAKE_Device(x) CCyUSBDevice *USBDevice = ((bladerf_Cypress_Data *)(x))->CyDevice;
-#define DeviceLock(x) EnterCriticalSection(&((bladerf_Cypress_Data *)(x))->DeviceLock);
-#define DeviceUnlock(x) LeaveCriticalSection(&((bladerf_Cypress_Data *)(x))->DeviceLock);
+#define MAKE_Device(x) CCyUSBDevice *USBDevice = ((bladerf_cyapi *)(x))->dev;
+#define DeviceLock(x) EnterCriticalSection(&((bladerf_cyapi *)(x))->DeviceLock);
+#define DeviceUnlock(x) LeaveCriticalSection(&((bladerf_cyapi *)(x))->DeviceLock);
 
 static int cyapi_probe(struct bladerf_devinfo_list *info_list)
 {
   int status=0;
-    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, guid);
+    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, driver_guid);
     for (int i=0; i< USBDevice->DeviceCount(); i++)
     {
         struct bladerf_devinfo info;
@@ -79,7 +87,7 @@ static int cyapi_open(void **driver,
      int status=0;
     int Result=BLADERF_ERR_IO;
 
-    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, guid);
+    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, driver_guid);
     struct bladerf_devinfo_list info_list;
     bladerf_devinfo_list_init(&info_list);
     cyapi_probe(&info_list);
@@ -95,15 +103,15 @@ static int cyapi_open(void **driver,
     free(info_list.elt);
     if (USBDevice->Open(instance))
     {
-        struct bladerf_Cypress_Data *DevData;
-        DevData = (struct bladerf_Cypress_Data *)calloc(1,sizeof(struct bladerf_Cypress_Data));
+        struct bladerf_cyapi *DevData;
+        DevData = (struct bladerf_cyapi *)calloc(1,sizeof(struct bladerf_cyapi));
         if (!InitializeCriticalSectionAndSpinCount(&DevData->DeviceLock, 0x00000400) ) 
         {
             delete USBDevice;
             free(DevData);
             return BLADERF_ERR_IO;
         }
-        DevData->CyDevice = USBDevice;
+        DevData->dev = USBDevice;
         *driver = DevData;
         USBDevice->SetAltIntfc(1);
         return 0;
@@ -129,8 +137,8 @@ static int cyapi_change_setting(void *driver, uint8_t setting)
 
 static void cyapi_close(void *driver)
 {
-    struct bladerf_Cypress_Data *DevData = (struct bladerf_Cypress_Data *)driver;
-    DevData->CyDevice->Close();
+    struct bladerf_cyapi *DevData = (struct bladerf_cyapi *)driver;
+    DevData->dev->Close();
     DeleteCriticalSection(&(DevData->DeviceLock));
     free(driver);
 
