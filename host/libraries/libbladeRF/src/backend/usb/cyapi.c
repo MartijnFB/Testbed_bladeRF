@@ -45,12 +45,9 @@ static const GUID driver_guid = {
 /* "Private data" for the CyAPI backend */
 struct bladerf_cyapi {
     CCyUSBDevice *dev;
-    CRITICAL_SECTION DeviceLock; 
 };
 
 #define MAKE_Device(x) CCyUSBDevice *USBDevice = ((bladerf_cyapi *)(x))->dev;
-#define DeviceLock(x) EnterCriticalSection(&((bladerf_cyapi *)(x))->DeviceLock);
-#define DeviceUnlock(x) LeaveCriticalSection(&((bladerf_cyapi *)(x))->DeviceLock);
 
 static int cyapi_probe(struct bladerf_devinfo_list *info_list)
 {
@@ -105,12 +102,7 @@ static int cyapi_open(void **driver,
     {
         struct bladerf_cyapi *DevData;
         DevData = (struct bladerf_cyapi *)calloc(1,sizeof(struct bladerf_cyapi));
-        if (!InitializeCriticalSectionAndSpinCount(&DevData->DeviceLock, 0x00000400) ) 
-        {
-            delete USBDevice;
-            free(DevData);
-            return BLADERF_ERR_IO;
-        }
+
         DevData->dev = USBDevice;
         *driver = DevData;
         USBDevice->SetAltIntfc(1);
@@ -139,7 +131,6 @@ static void cyapi_close(void *driver)
 {
     struct bladerf_cyapi *DevData = (struct bladerf_cyapi *)driver;
     DevData->dev->Close();
-    DeleteCriticalSection(&(DevData->DeviceLock));
     free(driver);
 
 }
@@ -173,7 +164,6 @@ static int cyapi_control_transfer(void *driver,
                                  void *buffer, uint32_t buffer_len,
                                  uint32_t timeout_ms)
 {
-    DeviceLock(driver);
     MAKE_Device(driver);
 
     int Result=0;
@@ -229,7 +219,6 @@ static int cyapi_control_transfer(void *driver,
         Result = BLADERF_ERR_IO;
     }
 
-    DeviceUnlock(driver);
     return Result;
 
 }
@@ -252,8 +241,6 @@ static int cyapi_bulk_transfer(void *driver, uint8_t endpoint, void *buffer,
                               uint32_t buffer_len, uint32_t timeout_ms)
 {
  int Result = 0;
-    DeviceLock(driver);
-
     MAKE_Device(driver);
 
         
@@ -278,8 +265,6 @@ static int cyapi_bulk_transfer(void *driver, uint8_t endpoint, void *buffer,
     {
         Result = BLADERF_ERR_IO;
     }
-
-    DeviceUnlock(driver);
 
     return Result;
 
