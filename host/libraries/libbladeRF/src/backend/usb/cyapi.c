@@ -47,20 +47,30 @@ struct bladerf_cyapi {
     CCyUSBDevice *dev;
 };
 
-#define MAKE_Device(x) CCyUSBDevice *USBDevice = ((bladerf_cyapi *)(x))->dev;
+static inline struct bladerf_cyapi * get_backend_data(void *driver)
+{
+    assert(driver);
+    return (struct bladerf_cyapi *) driver;
+}
+
+static inline CCyUSBDevice * get_device(void *driver)
+{
+    struct bladerf_cyapi *backend_data = get_backend_data(driver);
+    assert(backend_data->dev);
+    return backend_data->dev;
+}
 
 static int cyapi_probe(struct bladerf_devinfo_list *info_list)
 {
   int status=0;
-    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, driver_guid);
-    for (int i=0; i< USBDevice->DeviceCount(); i++)
-    {
+    CCyUSBDevice *dev = new CCyUSBDevice(NULL, driver_guid);
+
+    for (int i=0; i< dev->DeviceCount(); i++) {
         struct bladerf_devinfo info;
-        if (USBDevice->Open(i))
-        {
+        if (dev->Open(i)) {
             info.instance = i;
-            wcstombs(info.serial, USBDevice->SerialNumber, sizeof(info.serial));
-            info.usb_addr = USBDevice->USBAddress;
+            wcstombs(info.serial, dev->SerialNumber, sizeof(info.serial));
+            info.usb_addr = dev->USBAddress;
             info.usb_bus = 0;
             info.backend = BLADERF_BACKEND_CYPRESS;
             status = bladerf_devinfo_list_add(info_list, &info);
@@ -70,67 +80,65 @@ static int cyapi_probe(struct bladerf_devinfo_list *info_list)
                 log_verbose("Added instance %d to device list\n",
                     info.instance);
             }
-            USBDevice->Close();
+            dev->Close();
         }
     }
-    delete USBDevice;
+    delete dev;
     return status;
-    
+
 }
 static int cyapi_open(void **driver,
                      struct bladerf_devinfo *info_in,
                      struct bladerf_devinfo *info_out)
 {
-     int status=0;
-    int Result=BLADERF_ERR_IO;
+    int status = BLADERF_ERR_IO;
 
-    CCyUSBDevice *USBDevice = new CCyUSBDevice(NULL, driver_guid);
+    CCyUSBDevice *dev = new CCyUSBDevice(NULL, driver_guid);
     struct bladerf_devinfo_list info_list;
     bladerf_devinfo_list_init(&info_list);
     cyapi_probe(&info_list);
     int instance = -1;
-    for (unsigned int i=0; i<info_list.num_elt; i++)
-    {
-        if (bladerf_devinfo_matches(&info_list.elt[i],info_in))
-        {
+    for (unsigned int i=0; i<info_list.num_elt; i++) {
+        if (bladerf_devinfo_matches(&info_list.elt[i], info_in)) {
             instance = info_list.elt[i].instance;
             break;
         }
     }
+
     free(info_list.elt);
-    if (USBDevice->Open(instance))
-    {
-        struct bladerf_cyapi *DevData;
-        DevData = (struct bladerf_cyapi *)calloc(1,sizeof(struct bladerf_cyapi));
+    if (dev->Open(instance)) {
+        struct bladerf_cyapi *cyapi_data;
+        cyapi_data = (struct bladerf_cyapi *)calloc(1,sizeof(struct bladerf_cyapi));
 
-        DevData->dev = USBDevice;
-        *driver = DevData;
-        USBDevice->SetAltIntfc(1);
-        return 0;
+        cyapi_data->dev = dev;
+        *driver = cyapi_data;
+        dev->SetAltIntfc(1);
+        status = 0;
+    } else {
+        delete dev;
     }
-    else
-        delete USBDevice;
 
-    return Result;
+    return status;
 }
 
 static int cyapi_change_setting(void *driver, uint8_t setting)
 {
-    MAKE_Device(driver);
-    if (USBDevice->SetAltIntfc(setting))
-    {
-		int eptCount = USBDevice->EndPointCount();
+    CCyUSBDevice *dev = get_device(driver);
+
+    if (dev->SetAltIntfc(setting)) {
+		int eptCount = dev->EndPointCount();
         return 0;
-    }
-    else
+    } else {
         return BLADERF_ERR_IO;
+    }
 }
 
 
 static void cyapi_close(void *driver)
 {
-    struct bladerf_cyapi *DevData = (struct bladerf_cyapi *)driver;
-    DevData->dev->Close();
+    CCyUSBDevice *dev = get_device(driver);
+    dev->Close();
+    delete dev;
     free(driver);
 
 }
@@ -138,23 +146,20 @@ static void cyapi_close(void *driver)
 static int cyapi_get_speed(void *driver,
                           bladerf_dev_speed *device_speed)
 {
-    MAKE_Device(driver);
-    if (USBDevice->bHighSpeed)
-    {
+    int status = 0;
+    CCyUSBDevice *dev = get_device(driver);
+
+    if (dev->bHighSpeed) {
         *device_speed = BLADERF_DEVICE_SPEED_HIGH;
+    } else if (dev->bSuperSpeed) {
+        *device_speed = BLADERF_DEVICE_SPEED_SUPER;
+    } else {
+        *device_speed = BLADERF_DEVICE_SPEED_UNKNOWN;
+        status = BLADERF_ERR_UNEXPECTED;
+        log_debug("%s: Unable to determine device speed.\n", __FUNCTION__);
     }
-    else
-    {
-        if (USBDevice->bSuperSpeed)
-        {
-            *device_speed = BLADERF_DEVICE_SPEED_SUPER;
-        }
-        else
-        {
-            *device_speed = BLADERF_DEVICE_SPEED_UNKNOWN;
-        }
-    }
-    return 0;
+
+    return status;
 }
 
 static int cyapi_control_transfer(void *driver,
@@ -164,56 +169,56 @@ static int cyapi_control_transfer(void *driver,
                                  void *buffer, uint32_t buffer_len,
                                  uint32_t timeout_ms)
 {
-    MAKE_Device(driver);
+    CCyUSBDevice *dev = get_device(driver);
 
     int Result=0;
-    
+
     switch(dir)
     {
     case USB_DIR_DEVICE_TO_HOST:
-            USBDevice->ControlEndPt->Direction = (CTL_XFER_DIR_TYPE::DIR_FROM_DEVICE);
+            dev->ControlEndPt->Direction = (CTL_XFER_DIR_TYPE::DIR_FROM_DEVICE);
             break;
     case USB_DIR_HOST_TO_DEVICE:
-            USBDevice->ControlEndPt->Direction = (CTL_XFER_DIR_TYPE::DIR_TO_DEVICE);
+            dev->ControlEndPt->Direction = (CTL_XFER_DIR_TYPE::DIR_TO_DEVICE);
             break;
     }
 
     switch(req_type)
     {
         case USB_REQUEST_CLASS:
-            USBDevice->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_CLASS;
+            dev->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_CLASS;
             break;
         case USB_REQUEST_STANDARD:
-            USBDevice->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_STD;
+            dev->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_STD;
             break;
         case USB_REQUEST_VENDOR:
-            USBDevice->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_VENDOR;
+            dev->ControlEndPt->ReqType = CTL_XFER_REQ_TYPE::REQ_VENDOR;
             break;
     }
 
     switch (target_type)
     {
         case USB_TARGET_DEVICE:
-            USBDevice->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_DEVICE;
+            dev->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_DEVICE;
             break;
         case USB_TARGET_ENDPOINT:
-            USBDevice->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_ENDPT;
+            dev->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_ENDPT;
             break;
         case USB_TARGET_INTERFACE:
-            USBDevice->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_INTFC;
+            dev->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_INTFC;
             break;
         case USB_TARGET_OTHER:
-            USBDevice->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_OTHER;
+            dev->ControlEndPt->Target =  CTL_XFER_TGT_TYPE::TGT_OTHER;
             break;
     }
 
-    USBDevice->ControlEndPt->MaxPktSize = buffer_len;
-    USBDevice->ControlEndPt->ReqCode = request;
-    USBDevice->ControlEndPt->Index = windex;
-    USBDevice->ControlEndPt->Value = wvalue;
-    USBDevice->ControlEndPt->TimeOut = timeout_ms ? timeout_ms : 0xffffffff;
+    dev->ControlEndPt->MaxPktSize = buffer_len;
+    dev->ControlEndPt->ReqCode = request;
+    dev->ControlEndPt->Index = windex;
+    dev->ControlEndPt->Value = wvalue;
+    dev->ControlEndPt->TimeOut = timeout_ms ? timeout_ms : 0xffffffff;
     LONG LEN = buffer_len;
-    bool res = USBDevice->ControlEndPt->XferData((PUCHAR)buffer,LEN);
+    bool res = dev->ControlEndPt->XferData((PUCHAR)buffer,LEN);
     if (!res)
     {
         Result = BLADERF_ERR_IO;
@@ -229,10 +234,10 @@ static CCyBulkEndPoint *GetEndPoint(CCyUSBDevice *USBDevice,int id)
     int eptCount ;
     eptCount = USBDevice->EndPointCount();
 
-    for (int i=1; i<eptCount; i++) 
+    for (int i=1; i<eptCount; i++)
     {
         if (USBDevice->EndPoints[i]->Address == id)
-            return (CCyBulkEndPoint *)USBDevice->EndPoints[i]; 
+            return (CCyBulkEndPoint *)USBDevice->EndPoints[i];
     }
     return NULL;
 }
@@ -241,14 +246,14 @@ static int cyapi_bulk_transfer(void *driver, uint8_t endpoint, void *buffer,
                               uint32_t buffer_len, uint32_t timeout_ms)
 {
  int Result = 0;
-    MAKE_Device(driver);
+    CCyUSBDevice *dev = get_device(driver);
 
-        
-    CCyBulkEndPoint *EP = GetEndPoint(USBDevice, endpoint);
+
+    CCyBulkEndPoint *EP = GetEndPoint(dev, endpoint);
     if (EP)
     {
         LONG len=buffer_len;
-        USBDevice->ControlEndPt->TimeOut = timeout_ms ? timeout_ms : 0xffffffff;
+        dev->ControlEndPt->TimeOut = timeout_ms ? timeout_ms : 0xffffffff;
         EP->LastError=0;
         EP->bytesWritten=0;
         if (EP->XferData((PUCHAR)buffer,len))
@@ -295,7 +300,7 @@ struct cypressStreamData
 static int cyapi_init_stream(void *driver, struct bladerf_stream *stream,
                             size_t num_transfers)
 {
-    MAKE_Device(driver);
+    CCyUSBDevice *dev = get_device(driver);
 
     cypressStreamData *bData = (cypressStreamData *)malloc(sizeof(cypressStreamData));
     stream->backend_data = bData;
@@ -303,7 +308,7 @@ static int cyapi_init_stream(void *driver, struct bladerf_stream *stream,
     bData->ov = (OVERLAPPED*) calloc(1,num_transfers * sizeof(OVERLAPPED));
     bData->Token = (PUCHAR*) calloc(1,num_transfers * sizeof(PUCHAR*));
     bData->CurrentBuffer = (PUCHAR*) calloc(1,num_transfers * sizeof(void*));
-    bData->EP81 = GetEndPoint(USBDevice, 0x81);
+    bData->EP81 = GetEndPoint(dev, 0x81);
     bData->EP81->XferMode = XFER_MODE_TYPE::XMODE_DIRECT;
     bData->num_transfers = num_transfers;
     for (unsigned int i=0; i<num_transfers; i++)
@@ -359,7 +364,7 @@ static int cyapi_stream(void *driver, struct bladerf_stream *stream,
 			void* NextBuffer=NULL;
             log_verbose( "[CYPRESS] Got transfer %d (%x)->Buffer(%d)\n",idx,bData->CurrentBuffer[idx],FindBuffer(bData->CurrentBuffer[idx],stream));
 			if (bData->EP81->FinishDataXfer(bData->CurrentBuffer[idx] , len, &bData->ov[idx], bData->Token[idx]))
-			{ 
+			{
 				bData->Token[idx] = NULL;
 				NextBuffer = stream->cb(stream->dev, stream, NULL, bData->CurrentBuffer[idx], len/4, stream->user_data);
 				log_verbose( "[CYPRESS] Next Buffer %x\n",NextBuffer);
