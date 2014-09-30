@@ -36,8 +36,8 @@
 
 /* TODO Make these configurable */
 #define BUFFER_SIZE 4096
-#define NUM_BUFFERS 32
-#define NUM_XFERS   16
+#define NUM_BUFFERS 128
+#define NUM_XFERS   31
 #define TIMEOUT_MS  2500
 
 #define RESET_EXPECTED  UINT32_MAX
