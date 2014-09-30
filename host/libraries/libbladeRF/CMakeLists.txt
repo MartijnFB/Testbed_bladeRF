@@ -258,9 +258,9 @@ if(LIBUSB_FOUND AND ENABLE_BACKEND_LIBUSB)
 endif()
 
 if(CYAPI_FOUND AND ENABLE_BACKEND_CYAPI)
-    set(LIBBLADERF_SOURCE ${LIBBLADERF_SOURCE} src/backend/usb/cypress.c)
+    set(LIBBLADERF_SOURCE ${LIBBLADERF_SOURCE} src/backend/usb/cyapi.c)
     # CyAPI is C++
-    set_source_files_properties(src/backend/usb/cypress.c PROPERTIES LANGUAGE CXX)
+    set_source_files_properties(src/backend/usb/cyapi.c PROPERTIES LANGUAGE CXX)
 endif()
 
 if(ENABLE_BACKEND_DUMMY)
