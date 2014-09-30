@@ -47,6 +47,15 @@ struct bladerf_cyapi {
     CCyUSBDevice *dev;
 };
 
+struct stream_data {
+	HANDLE *handles;
+	OVERLAPPED  *ov;
+	PUCHAR *token;
+    PUCHAR  *curr_buf;
+	CCyBulkEndPoint *ep;
+    size_t num_transfers;
+};
+
 static inline struct bladerf_cyapi * get_backend_data(void *driver)
 {
     assert(driver);
@@ -58,6 +67,12 @@ static inline CCyUSBDevice * get_device(void *driver)
     struct bladerf_cyapi *backend_data = get_backend_data(driver);
     assert(backend_data->dev);
     return backend_data->dev;
+}
+
+static inline struct stream_data * get_stream_data(struct bladerf_stream *stream)
+{
+    assert(stream && stream->backend_data);
+    return (struct stream_data *) stream->backend_data;
 }
 
 static int cyapi_probe(struct bladerf_devinfo_list *info_list)
@@ -287,86 +302,124 @@ static int cyapi_get_string_descriptor(void *driver, uint8_t index,
     return res;
 }
 
-struct cypressStreamData
-{
-	HANDLE *Handles;
-	OVERLAPPED  *ov;
-	PUCHAR *Token;
-    PUCHAR  *CurrentBuffer;
-	CCyBulkEndPoint *EP81;
-    size_t num_transfers;
-};
 
 static int cyapi_init_stream(void *driver, struct bladerf_stream *stream,
                             size_t num_transfers)
 {
+    int status = BLADERF_ERR_MEM;
     CCyUSBDevice *dev = get_device(driver);
+    struct stream_data *data;
 
-    cypressStreamData *bData = (cypressStreamData *)malloc(sizeof(cypressStreamData));
-    stream->backend_data = bData;
-    bData->Handles = (HANDLE*) calloc(1,num_transfers * sizeof(HANDLE*));
-    bData->ov = (OVERLAPPED*) calloc(1,num_transfers * sizeof(OVERLAPPED));
-    bData->Token = (PUCHAR*) calloc(1,num_transfers * sizeof(PUCHAR*));
-    bData->CurrentBuffer = (PUCHAR*) calloc(1,num_transfers * sizeof(void*));
-    bData->EP81 = GetEndPoint(dev, 0x81);
-    bData->EP81->XferMode = XFER_MODE_TYPE::XMODE_DIRECT;
-    bData->num_transfers = num_transfers;
-    for (unsigned int i=0; i<num_transfers; i++)
-    {
-        bData->Handles[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
-        bData->ov[i].hEvent = bData->Handles[i];
+    data = (struct stream_data *) calloc(1, sizeof(data[0]));
+    if (data == NULL) {
+        return status;
     }
 
-    return 0;
+    data->handles = (HANDLE*) calloc(1,num_transfers * sizeof(HANDLE*));
+    if (data->handles == NULL) {
+        goto out;
+    }
 
+    data->ov = (OVERLAPPED*) calloc(1,num_transfers * sizeof(OVERLAPPED));
+    if (data->ov == NULL) {
+        goto out;
+    }
+
+    data->token = (PUCHAR*) calloc(1,num_transfers * sizeof(PUCHAR*));
+    if (data->token == NULL) {
+        goto out;
+    }
+
+    data->curr_buf = (PUCHAR*) calloc(1,num_transfers * sizeof(void*));
+    if (data->curr_buf == NULL) {
+        goto out;
+    }
+
+    // FIXME move this to stream execution
+    data->ep = GetEndPoint(dev, SAMPLE_EP_IN);
+    data->ep->XferMode = XFER_MODE_TYPE::XMODE_DIRECT;
+
+    data->num_transfers = num_transfers;
+    for (unsigned int i=0; i<num_transfers; i++) {
+        data->handles[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
+        if (data->handles[i] == NULL) {
+            log_debug("%s: Failed to create EventObject %u\n", i);
+            goto out;
+        }
+
+        data->ov[i].hEvent = data->handles[i];
+    }
+
+    status = 0;
+
+out:
+    if (status == 0) {
+        stream->backend_data = data;
+    } else {
+        // TODO - Deinit/deallocation as a result of CreateEvent() needed?
+        free(data->handles);
+        free(data->ov);
+        free(data->token);
+        free(data->curr_buf);
+    }
+
+    return status;
 }
 
 
-static int FindBuffer(void* ptr, struct bladerf_stream *stream)
+#ifdef LOGGING_ENABLED
+static inline int find_buf(void* ptr, struct bladerf_stream *stream)
 {
-    for (unsigned int i=0; i<stream->num_buffers; i++)
-	{
-        if (stream->buffers[i] == ptr)
+    for (unsigned int i=0; i<stream->num_buffers; i++) {
+        if (stream->buffers[i] == ptr) {
             return i;
+        }
 	}
+
+    log_debug("Unabled to find buffer %p\n:", ptr);
     return -1;
 }
+#endif
 
 
 static int cyapi_stream(void *driver, struct bladerf_stream *stream,
                        bladerf_module module)
 {
-    log_verbose( "Stream Start\n");
-	cypressStreamData *bData = (cypressStreamData *) stream->backend_data;
+    int curr_buf = 0;
+	struct stream_data *data = get_stream_data(stream);
 	LONG buffer_size = (LONG)sc16q11_to_bytes(stream->samples_per_buffer);
-    bData->EP81->Abort();
-    bData->EP81->Reset();
-    int CurrentBuffer =0;
-    for (unsigned int i=0; i<stream->num_buffers; i++)
-	{
+
+
+    data->ep->Abort();
+    data->ep->Reset();
+
+    for (unsigned int i = 0; i < stream->num_buffers; i++) {
         log_verbose( "Buffer %d Buffer %x\n",i,stream->buffers[i]);
 	}
-    for (unsigned int i=0; i<bData->num_transfers; i++)
-	{
-        bData->CurrentBuffer[i] =(PUCHAR) stream->buffers[i];
-		bData->Token[i] = bData->EP81->BeginDataXfer(bData->CurrentBuffer[i],buffer_size, &bData->ov[i]);
-        log_verbose( "Stream Transfer %d Buffer %x\n",i,bData->CurrentBuffer[i]);
+
+    for (unsigned int i=0; i < data->num_transfers; i++) {
+        data->curr_buf[i] = (PUCHAR) stream->buffers[i];
+		data->token[i] = data->ep->BeginDataXfer(data->curr_buf[i],buffer_size, &data->ov[i]);
+        log_verbose( "Stream Transfer %d Buffer %x\n", i, data->curr_buf[i]);
 	}
 	log_verbose( "Stream Setup\n");
 	while(true)
 	{
-        DWORD res  = WaitForSingleObjectEx(bData->Handles[CurrentBuffer], INFINITE, false); // WaitForMultipleObjects( (DWORD) bData->num_transfers, bData->Handles, false, INFINITE);
-        //if ((res >= WAIT_OBJECT_0) && (res <= WAIT_OBJECT_0+bData->num_transfers))
+        DWORD res  = WaitForSingleObjectEx(data->handles[curr_buf], INFINITE, false); // WaitForMultipleObjects( (DWORD) data->num_transfers, data->Handles, false, INFINITE);
+        //if ((res >= WAIT_OBJECT_0) && (res <= WAIT_OBJECT_0+data->num_transfers))
 		{
-			int idx = CurrentBuffer; //res - WAIT_OBJECT_0;
-            CurrentBuffer = (CurrentBuffer+1) % bData->num_transfers;
+			int idx = curr_buf; //res - WAIT_OBJECT_0;
+            curr_buf = (curr_buf+1) % data->num_transfers;
 			long len =0;
 			void* NextBuffer=NULL;
-            log_verbose( "[CYPRESS] Got transfer %d (%x)->Buffer(%d)\n",idx,bData->CurrentBuffer[idx],FindBuffer(bData->CurrentBuffer[idx],stream));
-			if (bData->EP81->FinishDataXfer(bData->CurrentBuffer[idx] , len, &bData->ov[idx], bData->Token[idx]))
+            log_verbose("%s: Got transfer %d (%x)->Buffer(%d)\n",
+                        __FUNCTION__, idx, data->curr_buf[idx],
+                        find_buf(data->curr_buf[idx], stream));
+
+			if (data->ep->FinishDataXfer(data->curr_buf[idx] , len, &data->ov[idx], data->token[idx]))
 			{
-				bData->Token[idx] = NULL;
-				NextBuffer = stream->cb(stream->dev, stream, NULL, bData->CurrentBuffer[idx], len/4, stream->user_data);
+				data->token[idx] = NULL;
+				NextBuffer = stream->cb(stream->dev, stream, NULL, data->curr_buf[idx], len/4, stream->user_data);
 				log_verbose( "[CYPRESS] Next Buffer %x\n",NextBuffer);
 			}
 			else
@@ -376,8 +429,8 @@ static int cyapi_stream(void *driver, struct bladerf_stream *stream,
 			}
 			if (NextBuffer != NULL)
             {
-                bData->CurrentBuffer[idx] = (PUCHAR) NextBuffer;
-                bData->Token[idx] = bData->EP81->BeginDataXfer(bData->CurrentBuffer[idx],buffer_size, &bData->ov[idx]);
+                data->curr_buf[idx] = (PUCHAR) NextBuffer;
+                data->token[idx] = data->ep->BeginDataXfer(data->curr_buf[idx],buffer_size, &data->ov[idx]);
             }
 			else
 				break;
@@ -385,13 +438,12 @@ static int cyapi_stream(void *driver, struct bladerf_stream *stream,
 	}
 	stream->state = STREAM_SHUTTING_DOWN;
 	log_verbose( "Teardown \n");
-    bData->EP81->Abort();
-    for (unsigned int i=0; i<bData->num_transfers; i++)
+    data->ep->Abort();
+    for (unsigned int i = 0; i < data->num_transfers; i++)
 	{
 		LONG len=0;
-		if (bData->Token[i] != NULL)
-		{
-			bData->EP81->FinishDataXfer(bData->CurrentBuffer[i] , len, &bData->ov[i], bData->Token[i]);
+		if (data->token[i] != NULL) {
+			data->ep->FinishDataXfer(data->curr_buf[i] , len, &data->ov[i], data->token[i]);
 		}
 	}
 	stream->state = STREAM_DONE;
