@@ -1614,8 +1614,8 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  * These functions are thread-safe.
  *
  * <H3> RX and TX without metadata </H3>
- * Below is the general process for using this interface to receive SC16 Q11
- * samples, without metadata.
+ * Below is the general process for using this interface to transmit and receive
+ * SC16 Q11 samples, without metadata.
  *
  * @snippet sync_rxtx.c example_snippet
  *
@@ -1631,7 +1631,7 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  * and the number of samples actually copied into the buffer before the
  * discontinuity caused by the overrun.
  *
- *
+ * @snippet sync_rx_meta.c example_snippet
  *
  * @{
  */

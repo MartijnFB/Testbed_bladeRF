@@ -357,7 +357,7 @@ if(BUILD_LIBBLADERF_DOCUMENTATION)
     if(DOXYGEN_FOUND)
         message(STATUS "Configured to build libbladeRF API documentation.")
 
-        if(BUILD_LIBBLADERF_DOC_SNIPPETS)
+        if(BUILD_LIBBLADERF_DOC_EXAMPLES)
             add_subdirectory(doc/examples)
         endif()
 

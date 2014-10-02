@@ -26,6 +26,9 @@
 #ifndef EXAMPLE_COMMON_H__
 #define EXAMPLE_COMMON_H__
 
+/* Some portability macros */
+#include "host_config.h"
+
 /* assert() that is kept enabled in non-debug builds */
 #include "rel_assert.h"
 

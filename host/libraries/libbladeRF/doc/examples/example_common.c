@@ -33,8 +33,6 @@ struct bladerf *example_init(const char *devstr)
     int status;
     struct bladerf *dev;
 
-    const unsigned int freq_tx = ;
-
     printf("Opening and initializing device...\n\n");
 
     status = bladerf_open(&dev, devstr);
@@ -106,7 +104,7 @@ struct bladerf *example_init(const char *devstr)
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("TX frequency: %u Hz\n", freq_tx);
+        printf("TX frequency: %u Hz\n", EXAMPLE_TX_FREQ);
     }
 
     status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX,
@@ -126,25 +124,25 @@ struct bladerf *example_init(const char *devstr)
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("TX bandwidth: %u\n", bw);
+        printf("TX bandwidth: %u\n", EXAMPLE_BANDWIDTH);
     }
 
-    status = bladerf_set_txvga1(dev, txvga1);
+    status = bladerf_set_txvga1(dev, EXAMPLE_TX_VGA1);
     if (status != 0) {
         fprintf(stderr, "Failed to set TX VGA1 gain: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("TX VGA1 gain: %d\n", txvga1);
+        printf("TX VGA1 gain: %d\n", EXAMPLE_TX_VGA1);
     }
 
-    status = bladerf_set_txvga2(dev, txvga2);
+    status = bladerf_set_txvga2(dev, EXAMPLE_TX_VGA2);
     if (status != 0) {
         fprintf(stderr, "Failed to set TX VGA2 gain: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("TX VGA2 gain: %d\n\n", txvga2);
+        printf("TX VGA2 gain: %d\n\n", EXAMPLE_TX_VGA2);
     }
 
 out:

@@ -8,4 +8,7 @@ set(INCLUDES
 set(LIBS libbladerf_shared)
 
 add_executable(libbladeRF_example_sync_rxtx sync_rxtx.c example_common.c)
-target_link_libraries(libbladeRF_example_sync_rx ${LIBS})
+target_link_libraries(libbladeRF_example_sync_rxtx ${LIBS})
+
+add_executable(libbladeRF_example_sync_rx_meta sync_rx_meta.c example_common.c)
+target_link_libraries(libbladeRF_example_sync_rx_meta ${LIBS})
