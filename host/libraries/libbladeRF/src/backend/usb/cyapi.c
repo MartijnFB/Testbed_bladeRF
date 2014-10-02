@@ -23,8 +23,7 @@
  * CyUSB3.sys driver (with a CyUSB3.inf modified to include the bladeRF VID/PID).
  */
 
-extern "C"
-{
+extern "C" {
 #include <stdlib.h>
 #include <pthread.h>
 #include <errno.h>
@@ -35,7 +34,9 @@ extern "C"
 #include "async.h"
 #include "log.h"
 }
+
 #include <CyAPI.h>
+
 
 /* This GUID must match that in the modified CyUSB3.inf used with the bladeRF */
 static const GUID driver_guid = {
@@ -381,66 +382,108 @@ static inline int find_buf(void* ptr, struct bladerf_stream *stream)
 }
 #endif
 
+#ifndef ENABLE_LIBBLADERF_ASYNC_LOG_VERBOSE
+#undef log_verbose
+#define log_verbose(...)
+#endif
 
 static int cyapi_stream(void *driver, struct bladerf_stream *stream,
                        bladerf_module module)
 {
-    int curr_buf = 0;
+    int idx = 0;
+    long len;
+    void *next_buffer;
+    DWORD wait_status;
+    DWORD timeout_ms;
+    bool success;
 	struct stream_data *data = get_stream_data(stream);
-	LONG buffer_size = (LONG)sc16q11_to_bytes(stream->samples_per_buffer);
+	LONG buffer_size = (LONG) sc16q11_to_bytes(stream->samples_per_buffer);
+
+    assert(stream->dev->transfer_timeout[stream->module] <= MAXDWORD);
+    if (stream->dev->transfer_timeout[stream->module] == 0) {
+        timeout_ms = INFINITE;
+    } else {
+        timeout_ms = (DWORD) stream->dev->transfer_timeout[stream->module];
+    }
 
 
     data->ep->Abort();
     data->ep->Reset();
 
+#ifdef ENABLE_VERBOSE_CYAPI
     for (unsigned int i = 0; i < stream->num_buffers; i++) {
-        log_verbose( "Buffer %d Buffer %x\n",i,stream->buffers[i]);
+        log_verbose("Buffer %5d: %p\n",i,stream->buffers[i]);
 	}
+#endif
 
-    for (unsigned int i=0; i < data->num_transfers; i++) {
-        data->curr_buf[i] = (PUCHAR) stream->buffers[i];
-		data->token[i] = data->ep->BeginDataXfer(data->curr_buf[i],buffer_size, &data->ov[i]);
-        log_verbose( "Stream Transfer %d Buffer %x\n", i, data->curr_buf[i]);
-	}
+    if (module == BLADERF_MODULE_RX) {
+        for (unsigned int i=0; i < data->num_transfers; i++) {
+            data->curr_buf[i] = (PUCHAR) stream->buffers[i];
+		    data->token[i] = data->ep->BeginDataXfer(data->curr_buf[i],
+                                                     buffer_size, &data->ov[i]);
+
+            log_verbose("Submitting transfer[%d] with buffer[%d]=%p\n",
+                        i, i, data->curr_buf[i]);
+	    }
+    } else {
+        assert(module == BLADERF_MODULE_TX);
+        assert(!"TO DO");
+    }
 	log_verbose( "Stream Setup\n");
-	while(true)
-	{
-        DWORD res  = WaitForSingleObjectEx(data->handles[curr_buf], INFINITE, false); // WaitForMultipleObjects( (DWORD) data->num_transfers, data->Handles, false, INFINITE);
-        //if ((res >= WAIT_OBJECT_0) && (res <= WAIT_OBJECT_0+data->num_transfers))
-		{
-			int idx = curr_buf; //res - WAIT_OBJECT_0;
-            curr_buf = (curr_buf+1) % data->num_transfers;
-			long len =0;
-			void* NextBuffer=NULL;
-            log_verbose("%s: Got transfer %d (%x)->Buffer(%d)\n",
-                        __FUNCTION__, idx, data->curr_buf[idx],
-                        find_buf(data->curr_buf[idx], stream));
 
-			if (data->ep->FinishDataXfer(data->curr_buf[idx] , len, &data->ov[idx], data->token[idx]))
-			{
-				data->token[idx] = NULL;
-				NextBuffer = stream->cb(stream->dev, stream, NULL, data->curr_buf[idx], len/4, stream->user_data);
-				log_verbose( "[CYPRESS] Next Buffer %x\n",NextBuffer);
-			}
-			else
-			{
-				printf("Error res = %d\n",res);
-				return 0;
-			}
-			if (NextBuffer != NULL)
-            {
-                data->curr_buf[idx] = (PUCHAR) NextBuffer;
-                data->token[idx] = data->ep->BeginDataXfer(data->curr_buf[idx],buffer_size, &data->ov[idx]);
+	while (true)
+	{
+        wait_status = WaitForSingleObjectEx(data->handles[idx],
+                                            INFINITE, false);
+
+        if (wait_status != WAIT_OBJECT_0) {
+            if (wait_status == WAIT_TIMEOUT) {
+                stream->error_code = BLADERF_ERR_TIMEOUT;
+                log_debug("Steam timed out.\n");
+            } else {
+                stream->error_code = BLADERF_ERR_UNEXPECTED;
+                log_debug("Failed to wait for stream event: 0x%lx\n",
+                          (long unsigned int) wait_status);
             }
-			else
-				break;
+
+            break;
+        }
+		
+
+		len = 0;
+		next_buffer = NULL;
+
+        log_verbose("Got event for transfer %d buffer[%d]=%p\n",
+                    idx, find_buf(data->curr_buf[idx], stream),
+                    data->curr_buf[idx]);
+
+        success = data->ep->FinishDataXfer(data->curr_buf[idx], len,
+                                           &data->ov[idx], data->token[idx]);
+
+        if (success) {
+			data->token[idx] = NULL;
+			next_buffer = stream->cb(stream->dev, stream, NULL, data->curr_buf[idx], len/4, stream->user_data);
+		} else {
+            stream->error_code = BLADERF_ERR_IO;
+			log_debug("Transfer idx=%d, buf=%p failed.\n", idx, &data->curr_buf[idx]);
+			break;
 		}
+
+        if (next_buffer == BLADERF_STREAM_SHUTDOWN) {
+            break;
+        } else {
+            log_verbose("Next buffer=%p\n", next_buffer);
+            data->curr_buf[idx] = (PUCHAR) next_buffer;
+            data->token[idx] = data->ep->BeginDataXfer(data->curr_buf[idx], buffer_size, &data->ov[idx]);
+        }
+
+        idx = (idx + 1) % data->num_transfers;
 	}
+
 	stream->state = STREAM_SHUTTING_DOWN;
 	log_verbose( "Teardown \n");
     data->ep->Abort();
-    for (unsigned int i = 0; i < data->num_transfers; i++)
-	{
+    for (unsigned int i = 0; i < data->num_transfers; i++) {
 		LONG len=0;
 		if (data->token[i] != NULL) {
 			data->ep->FinishDataXfer(data->curr_buf[i] , len, &data->ov[i], data->token[i]);
@@ -462,26 +505,24 @@ static int cyapi_deinit_stream(void *driver, struct bladerf_stream *stream)
     return 0;
 }
 
-extern "C"
-{
-static const struct usb_fns cypress_fns = {
-    FIELD_INIT(.probe, cyapi_probe),
-    FIELD_INIT(.open, cyapi_open),
-    FIELD_INIT(.close, cyapi_close),
-    FIELD_INIT(.get_speed, cyapi_get_speed),
-    FIELD_INIT(.change_setting, cyapi_change_setting),
-    FIELD_INIT(.control_transfer, cyapi_control_transfer),
-    FIELD_INIT(.bulk_transfer, cyapi_bulk_transfer),
-    FIELD_INIT(.get_string_descriptor, cyapi_get_string_descriptor),
-    FIELD_INIT(.init_stream, cyapi_init_stream),
-    FIELD_INIT(.stream, cyapi_stream),
-    FIELD_INIT(.submit_stream_buffer, cyapi_submit_stream_buffer),
-    FIELD_INIT(.deinit_stream, cyapi_deinit_stream)
-};
+extern "C" {
+    static const struct usb_fns cypress_fns = {
+        FIELD_INIT(.probe, cyapi_probe),
+        FIELD_INIT(.open, cyapi_open),
+        FIELD_INIT(.close, cyapi_close),
+        FIELD_INIT(.get_speed, cyapi_get_speed),
+        FIELD_INIT(.change_setting, cyapi_change_setting),
+        FIELD_INIT(.control_transfer, cyapi_control_transfer),
+        FIELD_INIT(.bulk_transfer, cyapi_bulk_transfer),
+        FIELD_INIT(.get_string_descriptor, cyapi_get_string_descriptor),
+        FIELD_INIT(.init_stream, cyapi_init_stream),
+        FIELD_INIT(.stream, cyapi_stream),
+        FIELD_INIT(.submit_stream_buffer, cyapi_submit_stream_buffer),
+        FIELD_INIT(.deinit_stream, cyapi_deinit_stream)
+    };
 
-struct usb_driver usb_driver_cypress = {
-    FIELD_INIT(.id, BLADERF_BACKEND_CYPRESS),
-    FIELD_INIT(.fn, &cypress_fns)
-};
-
+    struct usb_driver usb_driver_cypress = {
+        FIELD_INIT(.id, BLADERF_BACKEND_CYPRESS),
+        FIELD_INIT(.fn, &cypress_fns)
+    };
 }

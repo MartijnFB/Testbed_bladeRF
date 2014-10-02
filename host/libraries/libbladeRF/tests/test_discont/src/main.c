@@ -42,12 +42,13 @@
 
 #define RESET_EXPECTED  UINT32_MAX
 
-#define OPTSTR "hs:i:t:"
+#define OPTSTR "hs:i:t:v"
 const struct option long_options[] = {
     { "help",           no_argument,        0,          'h' },
     { "device",         required_argument,  0,          'd' },
     { "samplerate",     required_argument,  0,          's' },
     { "iterations",     required_argument,  0,          'i' },
+    { "verbose",        no_argument,        0,          'v' },
     { "test",           no_argument,        0,          't' },
 };
 
@@ -146,6 +147,10 @@ int handle_cmdline(int argc, char *argv[], struct app_params *p)
 
             case 'd':
                 p->device_str = optarg;
+                break;
+
+            case 'v':
+                bladerf_log_set_verbosity(BLADERF_LOG_LEVEL_VERBOSE);
                 break;
 
             case 'h':
