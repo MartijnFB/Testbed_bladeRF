@@ -26,22 +26,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <libbladeRF.h>
+#include "example_common.h"
 
 struct bladerf *example_init(const char *devstr)
 {
     int status;
     struct bladerf *dev;
-    const unsigned int samplerate = 2000000;
-    const unsigned int bw = BLADERF_BANDWIDTH_MIN;
 
-    const unsigned int freq_rx = 910000000;
-    const bladerf_lna_gain lna_gain = BLADERF_LNA_GAIN_MAX;
-    const int rxvga1 = 20;
-    const int rxvga2 = BLADERF_RXVGA2_GAIN_MIN;;
-    const unsigned int freq_tx = 920000000;
-
-    const int txvga1 = -20;
-    const int txvga2 = BLADERF_TXVGA2_GAIN_MIN;
+    const unsigned int freq_tx = ;
 
     printf("Opening and initializing device...\n\n");
 
@@ -52,34 +44,36 @@ struct bladerf *example_init(const char *devstr)
         goto out;
     }
 
-    status = bladerf_set_frequency(dev, BLADERF_MODULE_RX, freq_rx);
+    status = bladerf_set_frequency(dev, BLADERF_MODULE_RX, EXAMPLE_RX_FREQ);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX frequency: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("RX frequency: %u Hz\n", freq_rx);
+        printf("RX frequency: %u Hz\n", EXAMPLE_RX_FREQ);
     }
 
-    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_RX, samplerate, NULL);
+    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_RX,
+                                     EXAMPLE_SAMPLERATE, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX sample rate: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("RX samplerate: %u sps\n", samplerate);
+        printf("RX samplerate: %u sps\n", EXAMPLE_SAMPLERATE);
     }
 
-    status = bladerf_set_bandwidth(dev, BLADERF_MODULE_RX, bw, NULL);
+    status = bladerf_set_bandwidth(dev, BLADERF_MODULE_RX,
+                                   EXAMPLE_BANDWIDTH, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX bandwidth: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("RX bandwidth: %u Hz\n", bw);
+        printf("RX bandwidth: %u Hz\n", EXAMPLE_BANDWIDTH);
     }
 
-    status = bladerf_set_lna_gain(dev, lna_gain);
+    status = bladerf_set_lna_gain(dev, EXAMPLE_RX_LNA);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX LNA gain: %s\n",
                 bladerf_strerror(status));
@@ -88,25 +82,25 @@ struct bladerf *example_init(const char *devstr)
         printf("RX LNA Gain: Max\n");
     }
 
-    status = bladerf_set_rxvga1(dev, rxvga1);
+    status = bladerf_set_rxvga1(dev, EXAMPLE_RX_VGA1);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX VGA1 gain: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("RX VGA1 gain: %d\n", rxvga1);
+        printf("RX VGA1 gain: %d\n", EXAMPLE_RX_VGA1);
     }
 
-    status = bladerf_set_rxvga2(dev, rxvga2);
+    status = bladerf_set_rxvga2(dev, EXAMPLE_RX_VGA2);
     if (status != 0) {
         fprintf(stderr, "Failed to set RX VGA2 gain: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("RX VGA2 gain: %d\n\n", rxvga2);
+        printf("RX VGA2 gain: %d\n\n", EXAMPLE_RX_VGA2);
     }
 
-    status = bladerf_set_frequency(dev, BLADERF_MODULE_TX, freq_tx);
+    status = bladerf_set_frequency(dev, BLADERF_MODULE_TX, EXAMPLE_TX_FREQ);
     if (status != 0) {
         fprintf(stderr, "Faield to set TX frequency: %s\n",
                 bladerf_strerror(status));
@@ -115,16 +109,18 @@ struct bladerf *example_init(const char *devstr)
         printf("TX frequency: %u Hz\n", freq_tx);
     }
 
-    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX, samplerate, NULL);
+    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX,
+                                     EXAMPLE_SAMPLERATE, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set TX sample rate: %s\n",
                 bladerf_strerror(status));
         goto out;
     } else {
-        printf("TX samplerate: %u sps\n", samplerate);
+        printf("TX samplerate: %u sps\n", EXAMPLE_SAMPLERATE);
     }
 
-    status = bladerf_set_bandwidth(dev, BLADERF_MODULE_TX, bw, NULL);
+    status = bladerf_set_bandwidth(dev, BLADERF_MODULE_TX,
+                                   EXAMPLE_BANDWIDTH, NULL);
     if (status != 0) {
         fprintf(stderr, "Failed to set TX bandwidth: %s\n",
                 bladerf_strerror(status));

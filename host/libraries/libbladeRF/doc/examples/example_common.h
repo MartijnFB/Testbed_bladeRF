@@ -29,6 +29,19 @@
 /* assert() that is kept enabled in non-debug builds */
 #include "rel_assert.h"
 
+/* Settings used in examples */
+#define EXAMPLE_SAMPLERATE  2000000
+#define EXAMPLE_BANDWIDTH   BLADERF_BANDWIDTH_MIN
+
+#define EXAMPLE_RX_FREQ     910000000
+#define EXAMPLE_RX_LNA      BLADERF_LNA_GAIN_MAX
+#define EXAMPLE_RX_VGA1     20
+#define EXAMPLE_RX_VGA2     BLADERF_RXVGA2_GAIN_MIN
+
+#define EXAMPLE_TX_FREQ     920000000
+#define EXAMPLE_TX_VGA1     (-20)
+#define EXAMPLE_TX_VGA2     BLADERF_TXVGA2_GAIN_MIN
+
 /**
  * Device initialization function for example snippets in this directory
  *

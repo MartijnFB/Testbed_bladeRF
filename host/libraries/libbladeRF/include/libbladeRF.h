@@ -1613,14 +1613,14 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  *
  * These functions are thread-safe.
  *
- * <H3> RX without metadata </H3>
+ * <H3> RX and TX without metadata </H3>
  * Below is the general process for using this interface to receive SC16 Q11
  * samples, without metadata.
  *
- * @snippet sync_rx.c example_snippet
+ * @snippet sync_rxtx.c example_snippet
  *
  * To run in a half-duplex mode of operation, simply remove the RX or TX
- * specific portions calls from the above example.
+ * specific portions from the above example.
  *
  *
  * <H3> RX with metadata </H3>
