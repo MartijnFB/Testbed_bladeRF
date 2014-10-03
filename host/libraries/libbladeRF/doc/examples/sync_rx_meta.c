@@ -37,7 +37,7 @@
 /** [example_snippet] */
 int meta_sync_rx_example(struct bladerf *dev, unsigned int samplerate)
 {
-    int status;
+    int status, ret;
     struct bladerf_metadata meta;
     unsigned int i;
 
@@ -149,6 +149,10 @@ int meta_sync_rx_example(struct bladerf *dev, unsigned int samplerate)
         meta.timestamp += samplerate + samplerate / 4;
     }
 
+
+out:
+    ret = status;
+
     /* Disable RX module, shutting down our underlying RX stream */
     status = bladerf_enable_module(dev, BLADERF_MODULE_RX, false);
     if (status != 0) {
@@ -156,11 +160,9 @@ int meta_sync_rx_example(struct bladerf *dev, unsigned int samplerate)
                 bladerf_strerror(status));
     }
 
-out:
-
     /* Free up our resources */
     free(samples);
-    return status;
+    return ret;
 }
 /** [example_snippet] */
 
