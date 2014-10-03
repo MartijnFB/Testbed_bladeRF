@@ -1,5 +1,5 @@
 /*
- * Example snippet for RX synchronous interface usage with metadata
+ * Example of RX synchronous interface usage with metadata
  *
  * This file is part of the bladeRF project:
  *   http://www.github.com/nuand/bladeRF
@@ -53,7 +53,7 @@ int meta_sync_rx_example(struct bladerf *dev, unsigned int samplerate)
     const unsigned int num_buffers = 16;
     const unsigned int buffer_size = 16384;
     const unsigned int num_transfers = 8;
-    const unsigned int timeout_ms  = 10000;
+    const unsigned int timeout_ms  = 5000;
 
     memset(&meta, 0, sizeof(meta));
 
