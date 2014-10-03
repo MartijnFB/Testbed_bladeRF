@@ -1618,7 +1618,7 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  *
  * These functions are thread-safe.
  *
- * <H3> RX and TX without metadata </H3>
+ * <H3>RX and TX without metadata </H3>
  * Below is the general process for using this interface to transmit and receive
  * SC16 Q11 samples, without metadata.
  *
@@ -1628,7 +1628,7 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  * specific portions from the above example.
  *
  *
- * <H3> RX with metadata </H3>
+ * <H3>RX with metadata</H3>
  * By using the ::BLADERF_FORMAT_SC16_Q11_META format with the synchronous
  * interface, one can read the timestamp associated with a received buffer of
  * data, or schedule to read a specific number of samples at a desired
@@ -1637,6 +1637,28 @@ int CALL_CONV bladerf_get_stream_timeout(struct bladerf *dev,
  * discontinuity caused by the overrun.
  *
  * @snippet sync_rx_meta.c example_snippet
+ *
+ * <H3>TX with metadata</H3>
+ * Using the synchronous interface with the ::BLADERF_FORMAT_SC16_Q11_META
+ * format allows for bursts of samples to be scheduled for transmissions.
+ * Between these bursts, the device transmits I=0, Q=0.
+ *
+ * To begin a burst, call bladerf_sync_tx() with the metadata's
+ * ::BLADERF_META_FLAG_TX_BURST_START flag set, the desired timestamp set in the
+ * bladerf_metadata structure, and any number of samples.
+ *
+ * You may then continue calling bladerf_sync_tx(), without needing to update
+ * the timestamp field in the bladerf_metadata structure. For these calls,
+ * no flags should be set.
+ *
+ * On the final bladerf_sync_tx() call for the burst, set the
+ * ::BLADERF_META_FLAG_TX_BURST_END flag, and ensure the final two samples
+ * provided to this function are 0.
+ *
+ * It is valid to send the entire burst with a single function call, with both
+ * flags set.
+ *
+ * @snippet sync_tx_meta.c example_snippet
  *
  * @{
  */
