@@ -35,7 +35,7 @@
 #include "example_common.h"
 
 /** [example_snippet] */
-int meta_sync_rx_example(struct bladerf *dev, unsigned int samplerate)
+int sync_rx_meta_example(struct bladerf *dev, unsigned int samplerate)
 {
     int status, ret;
     struct bladerf_metadata meta;
@@ -191,7 +191,7 @@ int main(int argc, char *argv[])
     dev = example_init(devstr);
     if (dev) {
         printf("Running...\n");
-        status = meta_sync_rx_example(dev, EXAMPLE_SAMPLERATE);
+        status = sync_rx_meta_example(dev, EXAMPLE_SAMPLERATE);
         printf("Closing the device...\n");
         bladerf_close(dev);
     }
