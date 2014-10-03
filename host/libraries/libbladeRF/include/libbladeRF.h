@@ -1324,6 +1324,11 @@ struct bladerf_metadata {
      * This parameter is not currently used by bladerf_sync_tx().
      */
     unsigned int actual_count;
+
+    /**
+     * Reserved for future use. Not used by any functions.
+     */
+    uint8_t reserved[32];
 };
 
 
