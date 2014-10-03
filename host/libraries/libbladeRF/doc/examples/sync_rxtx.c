@@ -1,5 +1,5 @@
 /*
- * Example snippet for RX synchronous interface documentation.
+ * Example usage of synchronous interface for RX & TX, without metadata
  *
  * This file is part of the bladeRF project:
  *   http://www.github.com/nuand/bladeRF
