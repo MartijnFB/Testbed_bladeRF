@@ -123,16 +123,13 @@ static int random_samplerates(struct bladerf *dev,
     unsigned failures = 0;
 
     for (i = n = 0; i < interations; i++, n++) {
+        const unsigned int mod =
+            BLADERF_SAMPLERATE_REC_MAX - BLADERF_SAMPLERATE_MIN + 1;
+
         randval_update(&p->randval_state);
 
-        rate = BLADERF_SAMPLERATE_MIN +
-                (p->randval_state % BLADERF_SAMPLERATE_REC_MAX);
-
-        if (rate < BLADERF_SAMPLERATE_MIN) {
-            rate = BLADERF_SAMPLERATE_MIN;
-        } else if (rate > BLADERF_SAMPLERATE_REC_MAX) {
-            rate = BLADERF_SAMPLERATE_REC_MAX;
-        }
+        rate = BLADERF_SAMPLERATE_MIN + (p->randval_state % mod);
+        assert(rate <= BLADERF_SAMPLERATE_REC_MAX);
 
         status = set_and_check(dev, m, rate);
         if (status != 0) {

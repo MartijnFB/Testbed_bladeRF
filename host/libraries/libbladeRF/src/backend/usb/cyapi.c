@@ -47,6 +47,7 @@ static const GUID driver_guid = {
 /* "Private data" for the CyAPI backend */
 struct bladerf_cyapi {
     CCyUSBDevice *dev;
+    HANDLE mutex;
 };
 
 struct transfer {
@@ -86,6 +87,45 @@ static inline struct stream_data * get_stream_data(struct bladerf_stream *s)
     return (struct stream_data *) s->backend_data;
 }
 
+static int open_device(CCyUSBDevice *dev, int instance, HANDLE *mutex)
+{
+    int status = 0;
+    bool success;
+    DWORD last_error;
+    const char prefix[] = "Global\\bladeRF-";
+    const size_t mutex_name_len = strlen(prefix) + BLADERF_SERIAL_LENGTH;
+    char *mutex_name = (char *) calloc(mutex_name_len, 1);
+
+    if (mutex_name == NULL) {
+        return BLADERF_ERR_MEM;
+    } else {
+        strcpy(mutex_name, prefix);
+    }
+
+    success = dev->Open(instance);
+    if (!success) {
+        status = BLADERF_ERR_IO;
+        goto out;
+    }
+
+    wcstombs(mutex_name + strlen(prefix), dev->SerialNumber, sizeof(mutex_name) - BLADERF_SERIAL_LENGTH - 1);
+    log_verbose("Mutex name: %s\n", mutex_name);
+
+    SetLastError(0);
+    *mutex = CreateMutex(NULL, true, mutex_name);
+    last_error = GetLastError();
+    if (mutex == NULL || last_error != 0) {
+        log_debug("Unable to create device mutex: mutex=%p, last_error=%ld\n",
+                  mutex, last_error);
+        dev->Close();
+        status = BLADERF_ERR_NODEV;
+    }
+
+out:
+    free(mutex_name);
+    return status;
+}
+
 static int cyapi_probe(struct bladerf_devinfo_list *info_list)
 {
     int status = 0;
@@ -96,9 +136,13 @@ static int cyapi_probe(struct bladerf_devinfo_list *info_list)
 
     for (int i = 0; i < dev->DeviceCount() && status == 0; i++) {
         struct bladerf_devinfo info;
-        if (dev->Open(i)) {
+        HANDLE mutex;
+
+        status = open_device(dev, i, &mutex);
+        if (status == 0) {
             info.instance = i;
-            wcstombs(info.serial, dev->SerialNumber, sizeof(info.serial));
+            memset(info.serial, 0, sizeof(info.serial));
+            wcstombs(info.serial, dev->SerialNumber, sizeof(info.serial) - 1);
             info.usb_addr = dev->USBAddress;
             info.usb_bus = 0; /* CyAPI doesn't provide a means to fetch this */
             info.backend = BLADERF_BACKEND_CYPRESS;
@@ -111,6 +155,7 @@ static int cyapi_probe(struct bladerf_devinfo_list *info_list)
                     info.instance);
             }
             dev->Close();
+            CloseHandle(mutex);
         }
     }
 
@@ -122,46 +167,50 @@ static int cyapi_open(void **driver,
                      struct bladerf_devinfo *info_in,
                      struct bladerf_devinfo *info_out)
 {
-    int status = BLADERF_ERR_IO;
-    bool success;
+    int status;
     int instance = -1;
     struct bladerf_devinfo_list info_list;
-    CCyUSBDevice *dev = new CCyUSBDevice(NULL, driver_guid);
+    CCyUSBDevice *dev;
+    struct bladerf_cyapi *cyapi_data;
 
+    dev = new CCyUSBDevice(NULL, driver_guid);
     if (dev == NULL) {
+        return BLADERF_ERR_MEM;
+    }
+
+    cyapi_data = (struct bladerf_cyapi *) calloc(1, sizeof(cyapi_data[0]));
+    if (cyapi_data == NULL) {
+        delete dev;
         return BLADERF_ERR_MEM;
     }
 
     bladerf_devinfo_list_init(&info_list);
     status = cyapi_probe(&info_list);
 
-    for (unsigned int i = 0; i < info_list.num_elt; i++) {
+    for (unsigned int i = 0; i < info_list.num_elt && status == 0; i++) {
         if (bladerf_devinfo_matches(&info_list.elt[i], info_in)) {
             instance = info_list.elt[i].instance;
-            break;
+
+            status = open_device(dev, instance, &cyapi_data->mutex);
+            if (status == 0) {
+                cyapi_data->dev = dev;
+                *driver = cyapi_data;
+                memcpy(info_out, &info_list.elt[instance], sizeof(info_out[0]));
+                status = 0;
+                break;
+            }
         }
     }
 
-    if (instance < 0) {
+    if (status == 0 && instance < 0) {
         status = BLADERF_ERR_NODEV;
-        goto out;
     }
 
-    success = dev->Open(instance) && dev->SetAltIntfc(1);
-    if (success) {
-        struct bladerf_cyapi *cyapi_data =
-            (struct bladerf_cyapi *) calloc(1, sizeof(struct bladerf_cyapi));
-
-        cyapi_data->dev = dev;
-        *driver = cyapi_data;
-        memcpy(info_out, &info_list.elt[instance], sizeof(info_out[0]));
-        status = 0;
-    } else {
-        status = BLADERF_ERR_UNEXPECTED;
-        delete dev;
+    if (status != 0) {
+       delete dev;
+       CloseHandle(cyapi_data->mutex);
     }
 
-out:
     free(info_list.elt);
     return status;
 }
@@ -180,9 +229,10 @@ static int cyapi_change_setting(void *driver, uint8_t setting)
 
 static void cyapi_close(void *driver)
 {
-    CCyUSBDevice *dev = get_device(driver);
-    dev->Close();
-    delete dev;
+    struct bladerf_cyapi *cyapi_data = get_backend_data(driver);
+    cyapi_data->dev->Close();
+    delete cyapi_data->dev;
+    CloseHandle(cyapi_data->mutex);
     free(driver);
 
 }

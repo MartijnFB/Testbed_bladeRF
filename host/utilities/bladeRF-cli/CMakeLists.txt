@@ -6,8 +6,8 @@ project(bladeRF-cli C)
 ################################################################################
 
 set(VERSION_INFO_MAJOR  0)
-set(VERSION_INFO_MINOR  11)
-set(VERSION_INFO_PATCH  1)
+set(VERSION_INFO_MINOR  12)
+set(VERSION_INFO_PATCH  0)
 if(NOT DEFINED VERSION_INFO_EXTRA)
     set(VERSION_INFO_EXTRA "git")
 endif()
@@ -135,7 +135,6 @@ set(BLADERF_CLI_SOURCE
         src/cmd/doc/cmd_help.h
         src/cmd/cmd.c
         src/cmd/erase.c
-        src/cmd/flash_common.c
         src/cmd/flash_backup.c
         src/cmd/flash_image.c
         src/cmd/flash_init_cal.c

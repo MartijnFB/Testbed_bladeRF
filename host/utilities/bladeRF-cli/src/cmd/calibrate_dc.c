@@ -25,6 +25,7 @@
 #include "calibrate.h"
 #include "common.h"
 #include "rel_assert.h"
+#include "thread.h"
 
 #define CAL_SAMPLERATE  3000000u
 #define CAL_BANDWIDTH   BLADERF_BANDWIDTH_MIN
@@ -45,7 +46,7 @@ struct cal_tx_task {
     bool started;
 
     pthread_t thread;
-    pthread_mutex_t lock;
+    MUTEX lock;
     int status;
     bool run;
 };
@@ -214,10 +215,22 @@ int calibrate_dc_rx(struct cli_state *s,
         goto out;
     }
 
+    /* Ensure old samples are flushed */
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, false);
+    if (status != 0) {
+        goto out;
+    }
+
+
     status = bladerf_sync_config(s->dev, BLADERF_MODULE_RX,
                                  BLADERF_FORMAT_SC16_Q11,
                                  CAL_NUM_BUFS, CAL_BUF_LEN,
                                  CAL_NUM_XFERS, CAL_TIMEOUT);
+    if (status != 0) {
+        goto out;
+    }
+
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, true);
     if (status != 0) {
         goto out;
     }
@@ -340,23 +353,23 @@ static void * exec_tx_task(void *args)
     int status = 0;
     struct cal_tx_task *task = (struct cal_tx_task*) args;
 
-    pthread_mutex_lock(&task->lock);
+    MUTEX_LOCK(&task->lock);
     run = task->run;
-    pthread_mutex_unlock(&task->lock);
+    MUTEX_UNLOCK(&task->lock);
 
     while (run && status == 0) {
         status = bladerf_sync_tx(task->s->dev, task->samples, CAL_BUF_LEN,
                                  NULL, CAL_TIMEOUT);
 
 
-        pthread_mutex_lock(&task->lock);
+        MUTEX_LOCK(&task->lock);
         run = task->run;
-        pthread_mutex_unlock(&task->lock);
+        MUTEX_UNLOCK(&task->lock);
     }
 
-    pthread_mutex_lock(&task->lock);
+    MUTEX_LOCK(&task->lock);
     task->status = status;
-    pthread_mutex_unlock(&task->lock);
+    MUTEX_UNLOCK(&task->lock);
 
     return NULL;
 }
@@ -369,9 +382,7 @@ static inline int init_tx_task(struct cli_state *s, struct cal_tx_task *task)
     task->run = true;
     task->s = s;
 
-    if (pthread_mutex_init(&task->lock, NULL) != 0) {
-        return BLADERF_ERR_UNEXPECTED;
-    }
+    MUTEX_INIT(&task->lock);
 
     /* Transmit the vector 0 + 0j */
     task->samples = (int16_t*) calloc(CAL_BUF_LEN * 2, sizeof(task->samples[0]));
@@ -398,9 +409,9 @@ static inline int start_tx_task(struct cal_tx_task *task)
 static inline int stop_tx_task(struct cal_tx_task *task)
 {
     if (task->started) {
-        pthread_mutex_lock(&task->lock);
+        MUTEX_LOCK(&task->lock);
         task->run = false;
-        pthread_mutex_unlock(&task->lock);
+        MUTEX_UNLOCK(&task->lock);
 
         pthread_join(task->thread, NULL);
     }
@@ -482,11 +493,16 @@ int calibrate_dc_tx(struct cli_state *s,
         goto out;
     }
 
-    status = bladerf_enable_module(s->dev, BLADERF_MODULE_TX, true);
+    /* Ensure old samples are flushed */
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, false);
     if (status != 0) {
         goto out;
     }
 
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_TX, false);
+    if (status != 0) {
+        goto out;
+    }
 
     status = bladerf_sync_config(s->dev, BLADERF_MODULE_RX,
                                  BLADERF_FORMAT_SC16_Q11,
@@ -504,6 +520,16 @@ int calibrate_dc_tx(struct cli_state *s,
         goto out;
     }
 
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, true);
+    if (status != 0) {
+        goto out;
+    }
+
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_TX, true);
+    if (status != 0) {
+        goto out;
+    }
+
     status = start_tx_task(&tx_task);
     if (status != 0) {
         goto out;
@@ -511,10 +537,10 @@ int calibrate_dc_tx(struct cli_state *s,
 
     /* Sample the results of 4 points, which should yield 2 intersecting lines,
      * for 4 different DC offset settings of the I channel */
-    p0.x = -1024;
-    p1.x = -768;
-    p2.x = 768;
-    p3.x = 1024;
+    p0.x = -2048;
+    p1.x = -512;
+    p2.x = 512;
+    p3.x = 2048;
 
     status = rx_avg_magnitude(s->dev, rx_samples, (int16_t) p0.x, 0, &p0.y);
     if (status != 0) {
@@ -726,12 +752,6 @@ int calibrate_dc_gen_tbl(struct cli_state *s, bladerf_module module,
     status = bladerf_get_loopback(s->dev, &loopback_backup);
     if (status != 0) {
         return status;
-    }
-
-    /* RX used for both TX and RX cal. TX module will be enabled as-needed */
-    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, true);
-    if (status != 0) {
-        goto out;
     }
 
     status = bladerf_lms_get_dc_cals(s->dev, &lms_dc_cals);
@@ -1027,24 +1047,21 @@ error:
     retval = status;
 
     if (IS_RX_CAL(ops)) {
-        status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, false);
-        retval = first_error(retval, status);
-
         status = restore_settings(s->dev, BLADERF_MODULE_RX, &rx_settings);
         retval = first_error(retval, status);
     }
 
 
     if (IS_TX_CAL(ops)) {
-        status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, false);
-        retval = first_error(retval, status);
-
-        status = bladerf_enable_module(s->dev, BLADERF_MODULE_TX, false);
-        retval = first_error(retval, status);
-
         status = restore_settings(s->dev, BLADERF_MODULE_TX, &tx_settings);
         retval = first_error(retval, status);
     }
+
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_RX, false);
+    retval = first_error(retval, status);
+
+    status = bladerf_enable_module(s->dev, BLADERF_MODULE_TX, false);
+    retval = first_error(retval, status);
 
     status = bladerf_set_loopback(s->dev, loopback);
     retval = first_error(retval, status);

@@ -30,131 +30,168 @@
 #include "conversions.h"
 #include "host_config.h"
 #include "rxtx_impl.h"
+#include "minmax.h"
 
 /* The DAC range is [-2048, 2047] */
 #define SC16Q11_IQ_MIN  (-2048)
 #define SC16Q11_IQ_MAX  (2047)
 
-struct tx_callback_data
+static int tx_task_exec_running(struct rxtx_data *tx, struct cli_state *s)
 {
-    struct rxtx_data *tx;
-    unsigned int delay;         /* How much time the callback should delay
-                                 * before returning samples */
-    unsigned int repeats_left;  /* Number of repeats left */
-    bool repeat_inf;            /* Repeat infinitely (until stopped) */
-    bool done;                  /* We're done */
-};
-
-/* This callback reads SC16 Q11 data from a file (assumed to be little endian)
- * and ships this data off in the provided sample buffers */
-static void *tx_callback(struct bladerf *dev,
-                         struct bladerf_stream *stream,
-                         struct bladerf_metadata *meta,
-                         void *samples,
-                         size_t num_samples,
-                         void *user_data)
-{
-    struct tx_callback_data *cb_data = (struct tx_callback_data*)user_data;
-    struct rxtx_data *tx = cb_data->tx;
+    int status = 0;
+    unsigned int samples_per_buffer;
+    int16_t *tx_buffer;
     struct tx_params *tx_params = tx->params;
-    unsigned int delay = cb_data->delay;
+    unsigned int repeats_remaining;
+    unsigned int delay_us;
+    unsigned int delay_samples;
+    unsigned int delay_samples_remaining;
+    bool repeat_infinite;
+    unsigned int timeout_ms;
+    unsigned int sample_rate;
 
-    unsigned char requests; /* Requests from main control thread */
-    size_t read_status;     /* Status from read() calls */
-    size_t n_read;          /* # of int16_t I and Q values already read */
-    size_t to_read;         /* # of int16_t I and Q values to attempt to read */
-    bool zero_pad;          /* We need to zero-pad the rest of the buffer */
+    enum state { INIT, READ_FILE, DELAY, PAD_TRAILING, DONE };
+    enum state state = INIT;
 
-    int16_t *samples_int16 = NULL;
+    /* Fetch the parameters required for the TX operation */
+    MUTEX_LOCK(&tx->param_lock);
+    repeats_remaining = tx_params->repeat;
+    delay_us = tx_params->repeat_delay;
+    MUTEX_UNLOCK(&tx->param_lock);
 
-    /* Stop stream on STOP or SHUTDOWN, but only clear STOP. This will keep
-     * the SHUTDOWN request around so we can read it when determining
-     * our state transition */
-    requests = rxtx_get_requests(tx, RXTX_TASK_REQ_STOP);
-    if (cb_data->done ||
-        requests & (RXTX_TASK_REQ_STOP | RXTX_TASK_REQ_SHUTDOWN)) {
-        return NULL;
+    repeat_infinite = (repeats_remaining == 0);
+
+    MUTEX_LOCK(&tx->data_mgmt.lock);
+    samples_per_buffer = (unsigned int)tx->data_mgmt.samples_per_buffer;
+    timeout_ms = tx->data_mgmt.timeout_ms;
+    MUTEX_UNLOCK(&tx->data_mgmt.lock);
+
+    status = bladerf_get_sample_rate(s->dev, tx->module, &sample_rate);
+    if (status != 0) {
+        set_last_error(&tx->last_error, ETYPE_BLADERF, status);
+        return CLI_RET_LIBBLADERF;
     }
 
-    /* If we have a delay scheduled...wait around
-     * TODO replace this with a buffer filled with the appropriate number
-     * of 0's based upon the sample rate */
-    if (delay) {
-        usleep(delay);
-        cb_data->delay = 0;
+    /* Compute delay time as a sample count */
+    delay_samples = (unsigned int)((uint64_t)sample_rate * delay_us / 1000000);
+    delay_samples_remaining = delay_samples;
+
+    /* Allocate a buffer to hold each block of samples to transmit */
+    tx_buffer = (int16_t*) malloc(samples_per_buffer * 2 * sizeof(int16_t));
+    if (tx_buffer == NULL) {
+        status = CLI_RET_MEM;
+        set_last_error(&tx->last_error, ETYPE_ERRNO,
+                       errno == 0 ? ENOMEM : errno);
     }
 
-    pthread_mutex_lock(&tx->data_mgmt.lock);
-    pthread_mutex_lock(&tx->file_mgmt.file_lock);
+    /* Keep writing samples while there is more data to send and no failures
+     * have occurred */
+    while (state != DONE && status == 0) {
 
-    /* Get the next buffer */
-    samples_int16 = (int16_t*)tx->data_mgmt.buffers[tx->data_mgmt.next_idx];
-    tx->data_mgmt.next_idx++;
-    tx->data_mgmt.next_idx %= tx->data_mgmt.num_buffers;
+        unsigned char requests;
+        unsigned int buffer_samples_remaining = samples_per_buffer;
+        int16_t *tx_buffer_current = tx_buffer;
 
-    n_read = 0;
-    zero_pad = false;
-
-    /* Keep reading from the file until we have enough data, or have a
-     * a condition in which we'll just zero pad the rest of the buffer */
-    while (n_read < (2 * tx->data_mgmt.samples_per_buffer) && !zero_pad) {
-        to_read = (2 * tx->data_mgmt.samples_per_buffer) - n_read;
-        read_status = fread(samples_int16 + n_read, sizeof(int16_t),
-                            to_read, tx->file_mgmt.file);
-
-        if (read_status != to_read && ferror(tx->file_mgmt.file)) {
-            set_last_error(&tx->last_error, ETYPE_CLI, CLI_RET_FILEOP);
-            samples_int16 = NULL;
-            goto tx_callback_out;
+        /* Stop stream on STOP or SHUTDOWN, but only clear STOP. This will keep
+         * the SHUTDOWN request around so we can read it when determining
+         * our state transition */
+        requests = rxtx_get_requests(tx, RXTX_TASK_REQ_STOP);
+        if (requests & (RXTX_TASK_REQ_STOP | RXTX_TASK_REQ_SHUTDOWN)) {
+            break;
         }
 
-        n_read += read_status;
+        /* Keep adding to the buffer until it is full or a failure occurs */
+        while (buffer_samples_remaining > 0 && status == 0 && state != DONE) {
+            size_t samples_populated = 0;
 
-        /* Hit the end of the file */
-        if (feof(tx->file_mgmt.file)) {
+            switch (state) {
+                case INIT:
+                case READ_FILE:
 
-            /* We're going to repeat from the start of the file  */
-            if (cb_data->repeat_inf || --cb_data->repeats_left > 0) {
+                    MUTEX_LOCK(&tx->file_mgmt.file_lock);
 
-                pthread_mutex_lock(&tx->param_lock);
-                cb_data->delay = tx_params->repeat_delay;
-                pthread_mutex_unlock(&tx->param_lock);
+                    /* Read from the input file */
+                    samples_populated = fread(tx_buffer_current,
+                                              2 * sizeof(int16_t),
+                                              buffer_samples_remaining,
+                                              tx->file_mgmt.file);
 
-                if (fseek(tx->file_mgmt.file, 0, SEEK_SET) < 0) {
-                    set_last_error(&tx->last_error, ETYPE_ERRNO, errno);
-                    samples_int16 = NULL;
-                    goto tx_callback_out;
-                }
+                    assert(samples_populated <= UINT_MAX);
 
-                /* We have to delay first, so we'll zero out and get some
-                 * data in the next callback */
-                if (cb_data->delay != 0) {
-                    zero_pad = true;
-                }
-            } else {
-                /* No repeats left. Finish off whatever we have and note
-                 * that the next callback should start shutting things down */
-                zero_pad = true;
-                cb_data->done = true;
+                    /* If the end of the file was reached, determine whether
+                     * to delay, re-read from the file, or pad the rest of the
+                     * buffer and finish */
+                    if (feof(tx->file_mgmt.file)) {
+                        repeats_remaining--;
+
+                        if ((repeats_remaining > 0) || repeat_infinite) {
+                            if (delay_samples != 0) {
+                                delay_samples_remaining = delay_samples;
+                                state = DELAY;
+                            }
+                        }
+                        else {
+                            state = PAD_TRAILING;
+                        }
+
+                        /* Clear the EOF condition and rewind the file */
+                        clearerr(tx->file_mgmt.file);
+                        rewind(tx->file_mgmt.file);
+                    }
+
+                    /* Check for errors */
+                    else if (ferror(tx->file_mgmt.file)) {
+                        status = errno;
+                        set_last_error(&tx->last_error, ETYPE_ERRNO, status);
+                    }
+
+                    MUTEX_UNLOCK(&tx->file_mgmt.file_lock);
+                    break;
+
+                case DELAY:
+                    /* Insert as many zeros as are necessary to realize the
+                     * specified repeat delay */
+                    samples_populated = uint_min(buffer_samples_remaining,
+                                                 delay_samples_remaining);
+
+                    memset(tx_buffer_current, 0,
+                           samples_populated * 2 * sizeof(uint16_t));
+
+                    delay_samples_remaining -= (unsigned int)samples_populated;
+
+                    if (delay_samples_remaining == 0) {
+                        state = READ_FILE;
+                    }
+                    break;
+
+                case PAD_TRAILING:
+                    /* Populate the remainder of the buffer with zeros */
+                    memset(tx_buffer_current, 0,
+                            buffer_samples_remaining * 2 * sizeof(uint16_t));
+
+                    state = DONE;
+                    break;
+
+                case DONE:
+                default:
+                    break;
             }
+
+            /* Advance the buffer pointer.
+             * Remember, two int16_t's make up 1 sample in the SC16Q11 format */
+            buffer_samples_remaining -= (unsigned int)samples_populated;
+            tx_buffer_current += (2 * samples_populated);
+        }
+
+        /* If there were no errors, transmit the data buffer */
+        if (status == 0) {
+            bladerf_sync_tx(s->dev, tx_buffer, samples_per_buffer, NULL,
+                            timeout_ms);
         }
     }
 
-
-tx_callback_out:
-    pthread_mutex_unlock(&tx->file_mgmt.file_lock);
-
-    if (zero_pad) {
-        const size_t vals_per_buf = (2 * tx->data_mgmt.samples_per_buffer);
-        const size_t vals_leftover = vals_per_buf - n_read;
-        const size_t bytes_leftover = vals_leftover * sizeof(int16_t);
-
-        memset(&samples_int16[n_read], 0, bytes_leftover);
-    }
-
-    pthread_mutex_unlock(&tx->data_mgmt.lock);
-
-    return samples_int16;
+    free(tx_buffer);
+    return status;
 }
 
 /* Create a temp (binary) file from a CSV so we don't have to waste time
@@ -307,12 +344,12 @@ tx_csv_to_sc16q11_out:
 void *tx_task(void *cli_state_arg)
 {
     int status = 0;
+    int disable_status;
     unsigned char requests;
     enum rxtx_state task_state;
     struct cli_state *cli_state = (struct cli_state *) cli_state_arg;
     struct rxtx_data *tx = cli_state->tx;
-    struct tx_params *tx_params = tx->params;
-    struct tx_callback_data cb_data;
+    MUTEX *dev_lock = &cli_state->dev_lock;
 
     /* We expect to be in the IDLE state when this is kicked off. We could
      * also get into the shutdown state if the program exits before we
@@ -341,36 +378,19 @@ void *tx_task(void *cli_state_arg)
                 /* Clear out the last error */
                 set_last_error(&tx->last_error, ETYPE_ERRNO, 0);
 
-                /* Set up repeat and delay parameters for this run */
-                cb_data.tx = tx;
-                cb_data.delay = 0;
-                cb_data.done = false;
-
-                pthread_mutex_lock(&tx->param_lock);
-                cb_data.repeats_left = tx_params->repeat;
-                pthread_mutex_unlock(&tx->param_lock);
-
-                if (cb_data.repeats_left == 0) {
-                    cb_data.repeat_inf = true;
-                } else {
-                    cb_data.repeat_inf = false;
-                }
-
                 /* Bug catcher */
-                pthread_mutex_lock(&tx->file_mgmt.file_meta_lock);
+                MUTEX_LOCK(&tx->file_mgmt.file_meta_lock);
                 assert(tx->file_mgmt.file != NULL);
-                pthread_mutex_unlock(&tx->file_mgmt.file_meta_lock);
+                MUTEX_UNLOCK(&tx->file_mgmt.file_meta_lock);
 
-                /* Initialize the stream */
-                status = bladerf_init_stream(&tx->data_mgmt.stream,
-                                             cli_state->dev,
-                                             tx_callback,
-                                             &tx->data_mgmt.buffers,
-                                             tx->data_mgmt.num_buffers,
+                /* Initialize the TX synchronous data configuration */
+                status = bladerf_sync_config(cli_state->dev,
+                                             BLADERF_MODULE_TX,
                                              BLADERF_FORMAT_SC16_Q11,
+                                             tx->data_mgmt.num_buffers,
                                              tx->data_mgmt.samples_per_buffer,
                                              tx->data_mgmt.num_transfers,
-                                             &cb_data);
+                                             tx->data_mgmt.timeout_ms);
 
                 if (status < 0) {
                     err_type = ETYPE_BLADERF;
@@ -379,8 +399,6 @@ void *tx_task(void *cli_state_arg)
                 if (status == 0) {
                     rxtx_set_state(tx, RXTX_STATE_RUNNING);
                 } else {
-                    bladerf_deinit_stream(tx->data_mgmt.stream);
-                    tx->data_mgmt.stream = NULL;
                     set_last_error(&tx->last_error, err_type, status);
                     rxtx_set_state(tx, RXTX_STATE_IDLE);
                 }
@@ -388,7 +406,33 @@ void *tx_task(void *cli_state_arg)
             break;
 
             case RXTX_STATE_RUNNING:
-                rxtx_task_exec_running(tx, cli_state);
+                MUTEX_LOCK(dev_lock);
+                status = bladerf_enable_module(cli_state->dev,
+                                               tx->module, true);
+                MUTEX_UNLOCK(dev_lock);
+
+                if (status < 0) {
+                    set_last_error(&tx->last_error, ETYPE_BLADERF, status);
+                } else {
+                    status = tx_task_exec_running(tx, cli_state);
+
+                    if (status < 0) {
+                        set_last_error(&tx->last_error, ETYPE_BLADERF, status);
+                    }
+
+                    MUTEX_LOCK(dev_lock);
+                    disable_status = bladerf_enable_module(cli_state->dev,
+                                                           tx->module, false);
+                    MUTEX_UNLOCK(dev_lock);
+
+                    if (status == 0 && disable_status < 0) {
+                        set_last_error(
+                                &tx->last_error,
+                                ETYPE_BLADERF,
+                                disable_status);
+                    }
+                }
+                rxtx_set_state(tx, RXTX_STATE_STOP);
                 break;
 
             case RXTX_STATE_STOP:
@@ -419,7 +463,7 @@ static int tx_cmd_start(struct cli_state *s)
     }
 
     /* Perform file conversion (if needed) and open input file */
-    pthread_mutex_lock(&s->tx->file_mgmt.file_meta_lock);
+    MUTEX_LOCK(&s->tx->file_mgmt.file_meta_lock);
 
     if (s->tx->file_mgmt.format == RXTX_FMT_CSV_SC16Q11) {
         status = tx_csv_to_sc16q11(s);
@@ -431,29 +475,18 @@ static int tx_cmd_start(struct cli_state *s)
     }
 
     if (status == 0) {
-        pthread_mutex_lock(&s->tx->file_mgmt.file_lock);
+        MUTEX_LOCK(&s->tx->file_mgmt.file_lock);
 
         assert(s->tx->file_mgmt.format == RXTX_FMT_BIN_SC16Q11);
         status = expand_and_open(s->tx->file_mgmt.path, "rb",
                                  &s->tx->file_mgmt.file);
-        pthread_mutex_unlock(&s->tx->file_mgmt.file_lock);
+        MUTEX_UNLOCK(&s->tx->file_mgmt.file_lock);
     }
 
-    pthread_mutex_unlock(&s->tx->file_mgmt.file_meta_lock);
+    MUTEX_UNLOCK(&s->tx->file_mgmt.file_meta_lock);
 
     if (status != 0) {
         return status;
-    }
-
-
-    /* Set our stream timeout */
-    status = bladerf_set_stream_timeout(s->dev, BLADERF_MODULE_TX,
-                                        s->tx->data_mgmt.timeout_ms);
-
-    if (status != 0) {
-        s->last_lib_error = status;
-        set_last_error(&s->rx->last_error, ETYPE_BLADERF, s->last_lib_error);
-        return CLI_RET_LIBBLADERF;
     }
 
     /* Request thread to start running */
@@ -475,10 +508,10 @@ static void tx_print_config(struct rxtx_data *tx)
     unsigned int repetitions, repeat_delay;
     struct tx_params *tx_params = tx->params;
 
-    pthread_mutex_lock(&tx->param_lock);
+    MUTEX_LOCK(&tx->param_lock);
     repetitions = tx_params->repeat;
     repeat_delay = tx_params->repeat_delay;
-    pthread_mutex_unlock(&tx->param_lock);
+    MUTEX_UNLOCK(&tx->param_lock);
 
     printf("\n");
     rxtx_print_state(tx, "  State: ", "\n");
@@ -531,9 +564,9 @@ static int tx_config(struct cli_state *s, int argc, char **argv)
 
                 tmp = str2uint(val, 0, UINT_MAX, &ok);
                 if (ok) {
-                    pthread_mutex_lock(&s->tx->param_lock);
+                    MUTEX_LOCK(&s->tx->param_lock);
                     tx_params->repeat = tmp;
-                    pthread_mutex_unlock(&s->tx->param_lock);
+                    MUTEX_UNLOCK(&s->tx->param_lock);
                 } else {
                     cli_err(s, argv[0], RXTX_ERRMSG_VALUE(argv[1], val));
                     return CLI_RET_INVPARAM;
@@ -548,9 +581,9 @@ static int tx_config(struct cli_state *s, int argc, char **argv)
                 tmp = str2uint(val, 0, UINT_MAX, &ok);
 
                 if (ok) {
-                    pthread_mutex_lock(&s->tx->param_lock);
+                    MUTEX_LOCK(&s->tx->param_lock);
                     tx_params->repeat_delay = tmp;
-                    pthread_mutex_unlock(&s->tx->param_lock);
+                    MUTEX_UNLOCK(&s->tx->param_lock);
                 } else {
                     cli_err(s, argv[0], RXTX_ERRMSG_VALUE(argv[1], val));
                     return CLI_RET_INVPARAM;

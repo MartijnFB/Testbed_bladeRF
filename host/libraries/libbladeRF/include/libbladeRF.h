@@ -158,10 +158,21 @@ void CALL_CONV bladerf_free_device_list(struct bladerf_devinfo *devices);
 /**
  * Opens device specified by provided bladerf_devinfo structure
  *
- * @pre devinfo has been populated via a call to bladerf_get_device_list
+ * This function is generally preferred over bladerf_open() when a device
+ * identifier string is not already provided.
+ *
+ * The most common uses of this function are to:
+ *  - Open a device based upon the results of bladerf_get_device_list()
+ *  - Open a specific device based upon its serial number
+ *
+ * Below is an example of how to use this function to open a device with a
+ * specific serial number:
+ *
+ * @snippet open_via_serial.c example_snippet
  *
  * @param[out]  device      Update with device handle on success
- * @param[in]   devinfo     Device specification
+ * @param[in]   devinfo     Device specification. If NULL, any available
+ *                          device will be opened.
  *
  * @return 0 on success, or value from \ref RETCODES list on failure
  */
@@ -170,7 +181,9 @@ int CALL_CONV bladerf_open_with_devinfo(struct bladerf **device,
                                         struct bladerf_devinfo *devinfo);
 
 /**
- * Open specified device using a device identifier string
+ * Open specified device using a device identifier string. See
+ * bladerf_open_with_devinfo() if a device identifier string is not readily
+ * available.
  *
  * The general form of the device identifier string is;
  * @code
@@ -182,6 +195,7 @@ int CALL_CONV bladerf_open_with_devinfo(struct bladerf **device,
  *
  * The 'backend' describes the mechanism used to communicate with the device,
  * and may be one of the following:
+ *   - *:       Any available backend
  *   - libusb:  libusb (See libusb changelog notes for required version, given
  *   your OS and controller)
  *   - cypress: Cypress CyUSB/CyAPI backend (Windows only)
@@ -200,8 +214,7 @@ int CALL_CONV bladerf_open_with_devinfo(struct bladerf **device,
  *      - Specifies USB bus and address. Decimal or hex prefixed by '0x' is
  *        permitted.
  *   - instance=\<n\>
- *      - Nth instance encountered, 0-indexed (libusb)
- *      - Device node N, such as /dev/bladerfN (linux)
+ *      - Nth instance encountered, 0-indexed
  *   - serial=\<serial\>
  *      - Device's serial number.
  *

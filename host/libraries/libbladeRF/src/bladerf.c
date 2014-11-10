@@ -79,10 +79,16 @@ void bladerf_free_device_list(struct bladerf_devinfo *devices)
 }
 
 int bladerf_open_with_devinfo(struct bladerf **opened_device,
-                                struct bladerf_devinfo *devinfo)
+                              struct bladerf_devinfo *devinfo)
 {
     struct bladerf *dev;
+    struct bladerf_devinfo any_device;
     int status;
+
+    if (devinfo == NULL) {
+        bladerf_init_devinfo(&any_device);
+        devinfo = &any_device;
+    }
 
     *opened_device = NULL;
 
@@ -181,6 +187,19 @@ int bladerf_open_with_devinfo(struct bladerf **opened_device,
                     bladerf_strerror(status));
     }
 
+    dev->rx_filter = -1;
+    dev->tx_filter = -1;
+
+    dev->module_format[BLADERF_MODULE_RX] = -1;
+    dev->module_format[BLADERF_MODULE_TX] = -1;
+
+    /* Load any available calibration tables so that the LMS DC register
+     * configurations may be loaded in init_device */
+    status = config_load_dc_cals(dev);
+    if (status != 0) {
+        goto error;
+    }
+
     status = FPGA_IS_CONFIGURED(dev);
     if (status > 0) {
         /* If the FPGA version check fails, just warn, but don't error out.
@@ -194,17 +213,10 @@ int bladerf_open_with_devinfo(struct bladerf **opened_device,
         if (status != 0) {
             goto error;
         }
+    } else {
+        /* Try searching for an FPGA in the config search path */
+        status = config_load_fpga(dev);
     }
-
-    dev->rx_filter = -1;
-    dev->tx_filter = -1;
-
-    dev->module_format[BLADERF_MODULE_RX] = -1;
-    dev->module_format[BLADERF_MODULE_TX] = -1;
-
-    /* Load any configuration files or FPGA images that a user has stored
-     * for this device in their bladerf config directory */
-    status = config_load_all(dev);
 
 error:
     if (status < 0) {
@@ -247,8 +259,8 @@ void bladerf_close(struct bladerf *dev)
         free((void *)dev->fpga_version.describe);
         free((void *)dev->fw_version.describe);
 
-        dc_cal_tbl_free(dev->cal.dc_rx);
-        dc_cal_tbl_free(dev->cal.dc_tx);
+        dc_cal_tbl_free(&dev->cal.dc_rx);
+        dc_cal_tbl_free(&dev->cal.dc_tx);
 
         MUTEX_UNLOCK(&dev->ctrl_lock);
         free(dev);

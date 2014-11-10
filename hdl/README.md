@@ -18,11 +18,14 @@ Some FPGA binaries are available for [download][download].  Please note the md5 
 [download]: http://nuand.com/fpga (nuand/FPGA Images)
 
 ## Required Software ##
-We use an [Altera][altera] [Cyclone IV E FPGA][cive].  The size of the FPGA is the only difference between the x40 and x115 models.  Altera provides their [Quartus II software][quartus] for synthesizing designs for their FPGAs.  It is free of charge, but not open source and may require registering on their site to download the software.
+We use an [Altera][altera] [Cyclone IV E FPGA][cive].  The size of the FPGA is the only difference between the x40 and x115 models.  Altera provides their [Quartus II][quartus] software for synthesizing designs for their FPGAs.  It is free of charge, but not open source and may require registering on their site to download the software.
+
+**Important Note:** Be sure to download [Quartus II version 13.1][quartus] with [update 4], which the bladeRF project files are based upon. Quartus II version 14.0 is **not** currently reverse-compatible with [Quartus II version 13.1][quartus].
 
 [altera]: http://www.altera.com (Altera)
-[quartus]: http://www.altera.com/products/software/quartus-ii/web-edition/qts-we-index.html (Quartus II Web Edition Software)
+[quartus]: http://dl.altera.com/13.1/?edition=web (Quartus II Web Edition 13.1 Software)
 [cive]: http://www.altera.com/devices/fpga/cyclone-iv/overview/cyiv-overview.html
+[update 4]: http://www.altera.com/literature/rn/archives/rn_qts_131up4_dev_support.pdf (Quartus II 13.1 Update 4)
 
 ## HDL Structure ##
 Since the FPGA is connected and soldered down to the board, it makes sense to have a single top level which defines where the pins go, their IO levels and their genera directionality.  We use a single `bladerf.vhd` top level to define a VHDL entity called `bladerf` that defines these pins.
@@ -46,8 +49,8 @@ To support multiple versions of Quartus II on the same machine and to ensure the
 1. Take note of which Altera Cyclone IV you have. (The EP4CE40 is 40 kLE, and the EP4CE115 is 115 kLE.)  You'll need this size below...
 2. Enter the `quartus` directory
 3. Execute, from inside an appropriate NIOS II command shell, `./build_bladerf.sh -h` to view the usage for the build script. Note the size and revision options. Also note any items you'll need to add to your PATH before continuing.
-4. Execute, from inside an appropriate NIOS II command shell, `./build_bladerf.sh -s &lt;size&gt; -r &lt;revision&gt;`, with the relevant size for your bladeRF, and the desired revision.  This will create the NIOS system and software associated with the FPGA build needed by the internal RAM for execution.
-5. The current directory should now contain an FPGA image file, named in the form, &lt;revision&gt;x&lt;size&gt;.rbf
+4. Execute, from inside an appropriate NIOS II command shell, `./build_bladerf.sh -s <size> -r <revision>`, with the relevant size for your bladeRF, and the desired revision.  This will create the NIOS system and software associated with the FPGA build needed by the internal RAM for execution.
+5. The output of the build will be stored in a directory named in the form, `<revision>x<size>-<build time>`.  This directory will contain the bitstream, summaries, and reports.
 
 Note that there will be a _lot_ of information displayed from notes to critical warnings.  Some of these are benign and others are, in fact, critical.
 
